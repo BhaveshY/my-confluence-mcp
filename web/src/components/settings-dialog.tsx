@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useSettings } from "@/contexts/settings-context";
+import { useState, useEffect } from "react";
+import { useAuth } from "@/contexts/auth-context";
 import {
   Dialog,
   DialogContent,
@@ -10,155 +10,185 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Settings, CheckCircle2, AlertCircle, Loader2, ExternalLink, Sparkles } from "lucide-react";
-import { getApiClient } from "@/lib/confluence-client";
+import { Button } from "@/components/ui/button";
+import { Settings, Loader2, Check, X, Sparkles, LogOut, User, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function SettingsDialog() {
-  const { settings, aiSettings, saveSettings, saveAISettings, isConfigured, isAIConfigured } = useSettings();
+  const { user, confluenceSettings, aiSettings, isConfigured, isAIConfigured, saveSettings, logout, refreshUser } = useAuth();
   const [open, setOpen] = useState(false);
-  
-  // Confluence form state
-  const [domain, setDomain] = useState(settings.domain);
-  const [email, setEmail] = useState(settings.email);
-  const [apiToken, setApiToken] = useState(settings.apiToken);
-  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
-  const [testMessage, setTestMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<"success" | "error" | null>(null);
+  const [saveResult, setSaveResult] = useState<"success" | "error" | null>(null);
 
-  // AI form state
-  const [aiApiKey, setAiApiKey] = useState(aiSettings.apiKey);
-  const [aiTestStatus, setAiTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  // Local form state
+  const [localConfluence, setLocalConfluence] = useState({
+    domain: "",
+    email: "",
+    apiToken: "",
+  });
 
-  // Sync state when dialog opens
-  const handleOpenChange = (newOpen: boolean) => {
-    if (newOpen) {
-      setDomain(settings.domain);
-      setEmail(settings.email);
-      setApiToken(settings.apiToken);
-      setAiApiKey(aiSettings.apiKey);
-      setTestStatus("idle");
-      setAiTestStatus("idle");
-    }
-    setOpen(newOpen);
-  };
+  const [localAI, setLocalAI] = useState({
+    apiKey: "",
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-chat",
+    enabled: false,
+  });
 
-  const testConnection = async () => {
-    setTestStatus("testing");
-    try {
-      const client = getApiClient({
-        domain: domain.replace(/^https?:\/\//, "").replace(/\/$/, ""),
-        email,
-        apiToken,
+  // Sync local state with context when dialog opens
+  useEffect(() => {
+    if (open) {
+      setLocalConfluence({
+        domain: confluenceSettings.domain || "",
+        email: confluenceSettings.email || "",
+        apiToken: confluenceSettings.apiToken || "",
       });
-      const spaces = await client.getSpaces();
-      setTestStatus("success");
-      setTestMessage(`Connected! Found ${spaces.length} space(s).`);
-    } catch (error) {
-      setTestStatus("error");
-      setTestMessage(error instanceof Error ? error.message : "Connection failed");
+      setLocalAI({
+        apiKey: aiSettings.apiKey || "",
+        baseUrl: aiSettings.baseUrl || "https://api.deepseek.com",
+        model: aiSettings.model || "deepseek-chat",
+        enabled: aiSettings.enabled || false,
+      });
+      setTestResult(null);
+      setSaveResult(null);
     }
+  }, [open, confluenceSettings, aiSettings]);
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    setSaveResult(null);
+    
+    const result = await saveSettings(localConfluence, localAI);
+    
+    if (result.success) {
+      setSaveResult("success");
+      // Refresh user data to ensure settings are loaded
+      await refreshUser();
+      // Keep dialog open briefly to show success
+      setTimeout(() => {
+        setOpen(false);
+      }, 1000);
+    } else {
+      setSaveResult("error");
+    }
+    
+    setIsSaving(false);
   };
 
-  const saveConfluence = () => {
-    saveSettings({
-      domain: domain.replace(/^https?:\/\//, "").replace(/\/$/, ""),
-      email,
-      apiToken,
-    });
-    setTestStatus("success");
-    setTestMessage("Settings saved!");
-    setTimeout(() => setTestStatus("idle"), 2000);
-  };
+  const handleTest = async () => {
+    setIsTesting(true);
+    setTestResult(null);
 
-  const [aiTestMessage, setAiTestMessage] = useState("");
-  
-  const testAI = async () => {
-    setAiTestStatus("testing");
-    setAiTestMessage("Testing connection...");
     try {
-      const response = await fetch("/api/ai", {
-        method: "POST",
+      const response = await fetch("/api/spaces", {
         headers: {
-          "Content-Type": "application/json",
+          "x-confluence-domain": localConfluence.domain,
+          "x-confluence-email": localConfluence.email,
+          "x-confluence-token": localConfluence.apiToken,
         },
-        body: JSON.stringify({
-          message: "Say hello in one word",
-          apiKey: aiApiKey.trim(),
-        }),
       });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || "Invalid API key");
-      }
-      
-      setAiTestStatus("success");
-      setAiTestMessage("Connected successfully!");
-    } catch (err) {
-      setAiTestStatus("error");
-      setAiTestMessage(err instanceof Error ? err.message : "Connection failed");
+
+      setTestResult(response.ok ? "success" : "error");
+    } catch {
+      setTestResult("error");
     }
+
+    setIsTesting(false);
   };
 
-  const saveAI = () => {
-    // Trim the API key to remove any whitespace
-    const cleanedKey = aiApiKey.trim();
-    saveAISettings({
-      ...aiSettings,
-      apiKey: cleanedKey,
-      enabled: !!cleanedKey,
-    });
-    setAiApiKey(cleanedKey);
-    setAiTestStatus("success");
-    setTimeout(() => setAiTestStatus("idle"), 2000);
+  const handleLogout = async () => {
+    setOpen(false);
+    await logout();
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button variant="ghost" size="icon" className="relative">
-          <Settings className="h-5 w-5" />
+          <Settings className="w-5 h-5" />
           {!isConfigured && (
-            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-destructive rounded-full" />
+            <span className="absolute top-0 right-0 w-2 h-2 bg-destructive rounded-full" />
           )}
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[480px] glass">
+      <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Configure your Confluence and AI connections.
+            Configure your Confluence and AI connections. Settings are saved to your account.
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs defaultValue="confluence" className="mt-4">
+        {/* Success/Error Banner */}
+        {saveResult === "success" && (
+          <div className="flex items-center gap-2 p-3 bg-success/10 text-success rounded-lg animate-in fade-in">
+            <CheckCircle2 className="w-4 h-4" />
+            <span className="text-sm font-medium">Settings saved successfully!</span>
+          </div>
+        )}
+        {saveResult === "error" && (
+          <div className="flex items-center gap-2 p-3 bg-destructive/10 text-destructive rounded-lg animate-in fade-in">
+            <X className="w-4 h-4" />
+            <span className="text-sm font-medium">Failed to save settings</span>
+          </div>
+        )}
+
+        {/* User info */}
+        {user && (
+          <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg mb-2">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                <User className="w-4 h-4 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">{user.name}</p>
+                <p className="text-xs text-muted-foreground">{user.email}</p>
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLogout}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <LogOut className="w-4 h-4 mr-1" />
+              Logout
+            </Button>
+          </div>
+        )}
+
+        <Tabs defaultValue="confluence" className="w-full">
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="confluence" className="gap-2">
-              <Settings className="h-4 w-4" />
+              <Settings className="w-4 h-4" />
               Confluence
-              {isConfigured && <CheckCircle2 className="h-3 w-3 text-success" />}
+              {isConfigured && (
+                <Check className="w-3 h-3 text-success" />
+              )}
             </TabsTrigger>
             <TabsTrigger value="ai" className="gap-2">
-              <Sparkles className="h-4 w-4" />
+              <Sparkles className="w-4 h-4" />
               AI
-              {isAIConfigured && <CheckCircle2 className="h-3 w-3 text-success" />}
+              {isAIConfigured && (
+                <Check className="w-3 h-3 text-success" />
+              )}
             </TabsTrigger>
           </TabsList>
 
-          {/* Confluence Tab */}
           <TabsContent value="confluence" className="space-y-4 mt-4">
             <div className="space-y-2">
               <Label htmlFor="domain">Confluence Domain</Label>
               <Input
                 id="domain"
-                placeholder="your-company.atlassian.net"
-                value={domain}
-                onChange={(e) => setDomain(e.target.value)}
+                placeholder="your-domain.atlassian.net"
+                value={localConfluence.domain}
+                onChange={(e) =>
+                  setLocalConfluence({ ...localConfluence, domain: e.target.value })
+                }
               />
             </div>
 
@@ -167,133 +197,152 @@ export function SettingsDialog() {
               <Input
                 id="email"
                 type="email"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                placeholder="your@email.com"
+                value={localConfluence.email}
+                onChange={(e) =>
+                  setLocalConfluence({ ...localConfluence, email: e.target.value })
+                }
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="apiToken">API Token</Label>
+              <Label htmlFor="token">API Token</Label>
               <Input
-                id="apiToken"
+                id="token"
                 type="password"
                 placeholder="Your Atlassian API token"
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
+                value={localConfluence.apiToken}
+                onChange={(e) =>
+                  setLocalConfluence({ ...localConfluence, apiToken: e.target.value })
+                }
               />
               <p className="text-xs text-muted-foreground">
                 Get your token at{" "}
                 <a
                   href="https://id.atlassian.com/manage-profile/security/api-tokens"
                   target="_blank"
-                  rel="noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-1"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
                 >
-                  id.atlassian.com <ExternalLink className="h-3 w-3" />
+                  id.atlassian.com
                 </a>
               </p>
             </div>
 
-            {/* Status */}
-            {testStatus !== "idle" && (
-              <div
-                className={cn(
-                  "flex items-center gap-2 p-3 rounded-lg text-sm",
-                  testStatus === "success" && "bg-success/10 text-success",
-                  testStatus === "error" && "bg-destructive/10 text-destructive",
-                  testStatus === "testing" && "bg-muted text-muted-foreground"
-                )}
-              >
-                {testStatus === "testing" && <Loader2 className="h-4 w-4 animate-spin" />}
-                {testStatus === "success" && <CheckCircle2 className="h-4 w-4" />}
-                {testStatus === "error" && <AlertCircle className="h-4 w-4" />}
-                {testMessage}
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-2">
               <Button
                 variant="outline"
-                onClick={testConnection}
-                disabled={testStatus === "testing" || !domain || !email || !apiToken}
+                onClick={handleTest}
+                disabled={isTesting || !localConfluence.domain || !localConfluence.email || !localConfluence.apiToken}
                 className="flex-1"
               >
-                {testStatus === "testing" && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                {isTesting ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : testResult === "success" ? (
+                  <Check className="w-4 h-4 mr-2 text-success" />
+                ) : testResult === "error" ? (
+                  <X className="w-4 h-4 mr-2 text-destructive" />
+                ) : null}
                 Test
               </Button>
-              <Button onClick={saveConfluence} disabled={!domain || !email || !apiToken} className="flex-1">
+              <Button onClick={handleSave} disabled={isSaving} className="flex-1">
+                {isSaving ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : saveResult === "success" ? (
+                  <Check className="w-4 h-4 mr-2" />
+                ) : null}
                 Save
               </Button>
             </div>
           </TabsContent>
 
-          {/* AI Tab */}
           <TabsContent value="ai" className="space-y-4 mt-4">
-            <div className="p-3 rounded-lg bg-secondary/50 text-sm">
-              <p className="font-medium mb-1">DeepSeek AI</p>
-              <p className="text-muted-foreground text-xs">
-                Enable AI for smarter command understanding and content generation.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="aiApiKey">DeepSeek API Key</Label>
-              <Input
-                id="aiApiKey"
-                type="password"
-                placeholder="sk-..."
-                value={aiApiKey}
-                onChange={(e) => setAiApiKey(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Get your key at{" "}
-                <a
-                  href="https://platform.deepseek.com"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-1"
-                >
-                  platform.deepseek.com <ExternalLink className="h-3 w-3" />
-                </a>
-              </p>
-            </div>
-
-            {/* Status */}
-            {aiTestStatus !== "idle" && (
-              <div
+            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+              <div>
+                <p className="font-medium text-sm">Enable AI Features</p>
+                <p className="text-xs text-muted-foreground">
+                  Use DeepSeek for natural language
+                </p>
+              </div>
+              <button
+                onClick={() => setLocalAI({ ...localAI, enabled: !localAI.enabled })}
                 className={cn(
-                  "flex items-start gap-2 p-3 rounded-lg text-sm",
-                  aiTestStatus === "success" && "bg-success/10 text-success",
-                  aiTestStatus === "error" && "bg-destructive/10 text-destructive",
-                  aiTestStatus === "testing" && "bg-muted text-muted-foreground"
+                  "relative w-11 h-6 rounded-full transition-colors",
+                  localAI.enabled ? "bg-primary" : "bg-muted"
                 )}
               >
-                {aiTestStatus === "testing" && <Loader2 className="h-4 w-4 animate-spin flex-shrink-0 mt-0.5" />}
-                {aiTestStatus === "success" && <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5" />}
-                {aiTestStatus === "error" && <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />}
-                <span className="break-words">{aiTestMessage}</span>
-              </div>
+                <span
+                  className={cn(
+                    "absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform",
+                    localAI.enabled && "translate-x-5"
+                  )}
+                />
+              </button>
+            </div>
+
+            {localAI.enabled && (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="apiKey">DeepSeek API Key</Label>
+                  <Input
+                    id="apiKey"
+                    type="password"
+                    placeholder="sk-..."
+                    value={localAI.apiKey}
+                    onChange={(e) =>
+                      setLocalAI({ ...localAI, apiKey: e.target.value })
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Get your key at{" "}
+                    <a
+                      href="https://platform.deepseek.com/api_keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      platform.deepseek.com
+                    </a>
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="baseUrl">API Base URL</Label>
+                  <Input
+                    id="baseUrl"
+                    placeholder="https://api.deepseek.com"
+                    value={localAI.baseUrl}
+                    onChange={(e) =>
+                      setLocalAI({ ...localAI, baseUrl: e.target.value })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="model">Model</Label>
+                  <Input
+                    id="model"
+                    placeholder="deepseek-chat"
+                    value={localAI.model}
+                    onChange={(e) =>
+                      setLocalAI({ ...localAI, model: e.target.value })
+                    }
+                  />
+                </div>
+              </>
             )}
 
-            <div className="flex gap-2 pt-2">
-              <Button
-                variant="outline"
-                onClick={testAI}
-                disabled={aiTestStatus === "testing" || !aiApiKey}
-                className="flex-1"
-              >
-                {aiTestStatus === "testing" && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-                Test
-              </Button>
-              <Button onClick={saveAI} className="flex-1">
-                {aiApiKey ? "Save" : "Skip (use basic mode)"}
-              </Button>
-            </div>
+            <Button onClick={handleSave} disabled={isSaving} className="w-full">
+              {isSaving ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : saveResult === "success" ? (
+                <Check className="w-4 h-4 mr-2" />
+              ) : null}
+              Save
+            </Button>
           </TabsContent>
         </Tabs>
       </DialogContent>
     </Dialog>
   );
 }
-
