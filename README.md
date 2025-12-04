@@ -17,8 +17,8 @@
 ### 1. Clone & Install
 
 ```bash
-git clone <your-repo>
-cd confluence-gpt/web
+git clone https://github.com/BhaveshY/my-confluence-mcp.git
+cd my-confluence-mcp/web
 npm install
 ```
 
@@ -50,7 +50,7 @@ npm run dev
 
 ## Deploy to Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/your-repo/confluence-gpt)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/BhaveshY/my-confluence-mcp)
 
 Or manually:
 
