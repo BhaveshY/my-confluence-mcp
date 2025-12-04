@@ -2,17 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, apiKey: rawApiKey, mode = "parse" } = await request.json();
+    const body = await request.json();
+    const { message, apiKey: rawApiKey, mode = "parse" } = body;
 
-    // Clean the API key - remove whitespace
-    const apiKey = rawApiKey?.trim();
+    console.log("📥 Received request - mode:", mode, "message length:", message?.length);
+    console.log("📥 Raw API key type:", typeof rawApiKey, "length:", rawApiKey?.length);
+
+    // Clean the API key - remove whitespace and any invisible characters
+    const apiKey = rawApiKey?.toString().trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
 
     if (!apiKey) {
       return NextResponse.json({ error: "No API key provided" }, { status: 400 });
     }
     
-    // Log key format for debugging (not the actual key)
-    console.log("🔑 API Key format check - length:", apiKey.length, "starts with:", apiKey.substring(0, 3), "ends with:", apiKey.slice(-4));
+    // Detailed key format debugging
+    console.log("🔑 API Key debug:");
+    console.log("   - Length:", apiKey.length);
+    console.log("   - Starts with:", apiKey.substring(0, 5));
+    console.log("   - Ends with:", apiKey.slice(-6));
+    console.log("   - Contains spaces:", apiKey.includes(' '));
+    console.log("   - Contains newlines:", apiKey.includes('\n'));
+    
+    // Validate key format (DeepSeek keys typically start with 'sk-')
+    if (!apiKey.startsWith('sk-')) {
+      console.warn("⚠️ API key doesn't start with 'sk-' - might be invalid format");
+    }
 
     // Check if this is a document-based request (multiple indicators)
     const isDocumentRequest = 
@@ -123,70 +137,78 @@ Return ONLY valid JSON.`;
     console.log("🤖 AI Request - Document mode:", isDocumentRequest);
     console.log("🤖 Message preview:", message.substring(0, 200) + "...");
     
-    // Try DeepSeek API (both endpoints in case one fails)
-    const endpoints = [
-      "https://api.deepseek.com/chat/completions",
-      "https://api.deepseek.com/v1/chat/completions",
-    ];
+    // Build request body
+    const requestBody = {
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+        temperature: isDocumentRequest ? 0.05 : 0.2,
+        max_tokens: isDocumentRequest ? 8192 : 2000,  // DeepSeek max is 8192
+    };
     
-    let response: Response | null = null;
-    let lastError = "";
+    // Build headers
+    const headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    };
     
-    for (const endpoint of endpoints) {
-      console.log("🤖 Trying endpoint:", endpoint);
-      
-      try {
-        response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: message },
-            ],
-            temperature: isDocumentRequest ? 0.05 : 0.2,
-            max_tokens: isDocumentRequest ? 16000 : 2000,
-          }),
-        });
-        
-        if (response.ok) {
-          console.log("🤖 Success with endpoint:", endpoint);
-          break;
-        }
-        
-        lastError = await response.text();
-        console.error("🤖 Endpoint failed:", endpoint, lastError);
-      } catch (fetchError) {
-        lastError = fetchError instanceof Error ? fetchError.message : "Fetch failed";
-        console.error("🤖 Fetch error for endpoint:", endpoint, lastError);
-      }
+    console.log("🤖 Request headers (auth masked):", {
+      ...headers,
+      "Authorization": `Bearer ${apiKey.substring(0, 5)}...${apiKey.slice(-4)}`,
+    });
+    console.log("🤖 Request body preview:", JSON.stringify(requestBody).substring(0, 300));
+    
+    // Use the standard DeepSeek endpoint
+    const endpoint = "https://api.deepseek.com/chat/completions";
+    console.log("🤖 Calling endpoint:", endpoint);
+    
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify(requestBody),
+      });
+    } catch (fetchError) {
+      console.error("🤖 Fetch error:", fetchError);
+      return NextResponse.json({ 
+        error: `Network error calling DeepSeek: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}` 
+      }, { status: 500 });
     }
-
-    if (!response || !response.ok) {
-      console.error("DeepSeek API error (all endpoints failed):", lastError);
+    
+    console.log("🤖 Response status:", response.status, response.statusText);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("🤖 DeepSeek API error response:", errorText);
       
       // Parse error message for better feedback
-      let errorMessage = lastError;
+      let errorMessage = errorText;
+      let errorDetails = "";
       try {
-        const errorJson = JSON.parse(lastError);
+        const errorJson = JSON.parse(errorText);
         if (errorJson.error?.message) {
           errorMessage = errorJson.error.message;
         }
+        errorDetails = JSON.stringify(errorJson, null, 2);
       } catch {}
+      
+      console.error("🤖 Parsed error:", errorMessage);
+      console.error("🤖 Full error details:", errorDetails);
       
       // Check for common issues
       if (errorMessage.toLowerCase().includes("invalid") || errorMessage.toLowerCase().includes("authentication")) {
         return NextResponse.json({ 
-          error: `Invalid DeepSeek API key. Please check your key at platform.deepseek.com. Error: ${errorMessage}` 
+          error: `DeepSeek rejected the API key. Make sure you're using a valid key from platform.deepseek.com. Response: ${errorMessage}` 
         }, { status: 401 });
       }
       
-      return NextResponse.json({ error: `AI API error: ${errorMessage}` }, { status: response?.status || 500 });
+      return NextResponse.json({ error: `DeepSeek API error: ${errorMessage}` }, { status: response.status });
     }
+    
+    console.log("🤖 DeepSeek API call successful!");
 
     const data = await response.json();
     const content = data.choices[0]?.message?.content;
