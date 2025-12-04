@@ -2,11 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, apiKey, mode = "parse" } = await request.json();
+    const { message, apiKey: rawApiKey, mode = "parse" } = await request.json();
+
+    // Clean the API key - remove whitespace
+    const apiKey = rawApiKey?.trim();
 
     if (!apiKey) {
       return NextResponse.json({ error: "No API key provided" }, { status: 400 });
     }
+    
+    // Log key format for debugging (not the actual key)
+    console.log("🔑 API Key format check - length:", apiKey.length, "starts with:", apiKey.substring(0, 3), "ends with:", apiKey.slice(-4));
 
     // Check if this is a document-based request (multiple indicators)
     const isDocumentRequest = 
@@ -117,28 +123,69 @@ Return ONLY valid JSON.`;
     console.log("🤖 AI Request - Document mode:", isDocumentRequest);
     console.log("🤖 Message preview:", message.substring(0, 200) + "...");
     
-    const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        // Lower temperature for accuracy, high tokens for full document content
-        temperature: isDocumentRequest ? 0.05 : 0.2,
-        max_tokens: isDocumentRequest ? 16000 : 2000,
-      }),
-    });
+    // Try DeepSeek API (both endpoints in case one fails)
+    const endpoints = [
+      "https://api.deepseek.com/chat/completions",
+      "https://api.deepseek.com/v1/chat/completions",
+    ];
+    
+    let response: Response | null = null;
+    let lastError = "";
+    
+    for (const endpoint of endpoints) {
+      console.log("🤖 Trying endpoint:", endpoint);
+      
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: message },
+            ],
+            temperature: isDocumentRequest ? 0.05 : 0.2,
+            max_tokens: isDocumentRequest ? 16000 : 2000,
+          }),
+        });
+        
+        if (response.ok) {
+          console.log("🤖 Success with endpoint:", endpoint);
+          break;
+        }
+        
+        lastError = await response.text();
+        console.error("🤖 Endpoint failed:", endpoint, lastError);
+      } catch (fetchError) {
+        lastError = fetchError instanceof Error ? fetchError.message : "Fetch failed";
+        console.error("🤖 Fetch error for endpoint:", endpoint, lastError);
+      }
+    }
 
-    if (!response.ok) {
-      const error = await response.text();
-      console.error("DeepSeek API error:", error);
-      return NextResponse.json({ error: `AI API error: ${error}` }, { status: response.status });
+    if (!response || !response.ok) {
+      console.error("DeepSeek API error (all endpoints failed):", lastError);
+      
+      // Parse error message for better feedback
+      let errorMessage = lastError;
+      try {
+        const errorJson = JSON.parse(lastError);
+        if (errorJson.error?.message) {
+          errorMessage = errorJson.error.message;
+        }
+      } catch {}
+      
+      // Check for common issues
+      if (errorMessage.toLowerCase().includes("invalid") || errorMessage.toLowerCase().includes("authentication")) {
+        return NextResponse.json({ 
+          error: `Invalid DeepSeek API key. Please check your key at platform.deepseek.com. Error: ${errorMessage}` 
+        }, { status: 401 });
+      }
+      
+      return NextResponse.json({ error: `AI API error: ${errorMessage}` }, { status: response?.status || 500 });
     }
 
     const data = await response.json();

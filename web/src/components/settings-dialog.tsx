@@ -74,8 +74,11 @@ export function SettingsDialog() {
     setTimeout(() => setTestStatus("idle"), 2000);
   };
 
+  const [aiTestMessage, setAiTestMessage] = useState("");
+  
   const testAI = async () => {
     setAiTestStatus("testing");
+    setAiTestMessage("Testing connection...");
     try {
       const response = await fetch("/api/ai", {
         method: "POST",
@@ -83,23 +86,34 @@ export function SettingsDialog() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: "test",
-          apiKey: aiApiKey,
+          message: "Say hello in one word",
+          apiKey: aiApiKey.trim(),
         }),
       });
-      if (!response.ok) throw new Error("Invalid API key");
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || "Invalid API key");
+      }
+      
       setAiTestStatus("success");
-    } catch {
+      setAiTestMessage("Connected successfully!");
+    } catch (err) {
       setAiTestStatus("error");
+      setAiTestMessage(err instanceof Error ? err.message : "Connection failed");
     }
   };
 
   const saveAI = () => {
+    // Trim the API key to remove any whitespace
+    const cleanedKey = aiApiKey.trim();
     saveAISettings({
       ...aiSettings,
-      apiKey: aiApiKey,
-      enabled: !!aiApiKey,
+      apiKey: cleanedKey,
+      enabled: !!cleanedKey,
     });
+    setAiApiKey(cleanedKey);
     setAiTestStatus("success");
     setTimeout(() => setAiTestStatus("idle"), 2000);
   };
@@ -249,16 +263,16 @@ export function SettingsDialog() {
             {aiTestStatus !== "idle" && (
               <div
                 className={cn(
-                  "flex items-center gap-2 p-3 rounded-lg text-sm",
+                  "flex items-start gap-2 p-3 rounded-lg text-sm",
                   aiTestStatus === "success" && "bg-success/10 text-success",
                   aiTestStatus === "error" && "bg-destructive/10 text-destructive",
                   aiTestStatus === "testing" && "bg-muted text-muted-foreground"
                 )}
               >
-                {aiTestStatus === "testing" && <Loader2 className="h-4 w-4 animate-spin" />}
-                {aiTestStatus === "success" && <CheckCircle2 className="h-4 w-4" />}
-                {aiTestStatus === "error" && <AlertCircle className="h-4 w-4" />}
-                {aiTestStatus === "success" ? "Connected!" : aiTestStatus === "error" ? "Invalid key" : "Testing..."}
+                {aiTestStatus === "testing" && <Loader2 className="h-4 w-4 animate-spin flex-shrink-0 mt-0.5" />}
+                {aiTestStatus === "success" && <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-0.5" />}
+                {aiTestStatus === "error" && <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />}
+                <span className="break-words">{aiTestMessage}</span>
               </div>
             )}
 
