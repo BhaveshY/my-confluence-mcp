@@ -21,7 +21,7 @@ export async function GET(
       return NextResponse.json({ error: "Invalid conversation ID" }, { status: 400 });
     }
 
-    const conversation = conversationOps.findById(conversationId);
+    const conversation = await conversationOps.findById(conversationId);
 
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
@@ -32,7 +32,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    const messages = messageOps.findByConversationId(conversationId);
+    const messages = await messageOps.findByConversationId(conversationId);
 
     // Parse action_data JSON for each message
     const messagesWithParsedData = messages.map((msg) => ({
@@ -72,7 +72,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Invalid conversation ID" }, { status: 400 });
     }
 
-    const conversation = conversationOps.findById(conversationId);
+    const conversation = await conversationOps.findById(conversationId);
 
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
@@ -87,10 +87,10 @@ export async function PATCH(
     const { title } = body;
 
     if (title) {
-      conversationOps.updateTitle(conversationId, title);
+      await conversationOps.updateTitle(conversationId, title);
     }
 
-    const updatedConversation = conversationOps.findById(conversationId);
+    const updatedConversation = await conversationOps.findById(conversationId);
 
     return NextResponse.json({ conversation: updatedConversation });
   } catch (error) {
@@ -121,7 +121,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Invalid conversation ID" }, { status: 400 });
     }
 
-    const conversation = conversationOps.findById(conversationId);
+    const conversation = await conversationOps.findById(conversationId);
 
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
@@ -132,7 +132,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    conversationOps.delete(conversationId);
+    await conversationOps.delete(conversationId);
 
     return NextResponse.json({ message: "Conversation deleted" });
   } catch (error) {
@@ -143,4 +143,3 @@ export async function DELETE(
     );
   }
 }
-

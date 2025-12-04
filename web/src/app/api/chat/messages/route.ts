@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify conversation ownership
-    const conversation = conversationOps.findById(conversationId);
+    const conversation = await conversationOps.findById(conversationId);
 
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    const message = messageOps.create(conversationId, {
+    const message = await messageOps.create(conversationId, {
       role,
       content,
       attachment_filename: attachment?.fileName,
@@ -44,12 +44,12 @@ export async function POST(request: NextRequest) {
 
     // Auto-update conversation title from first user message
     if (role === "user") {
-      const allMessages = messageOps.findByConversationId(conversationId);
+      const allMessages = await messageOps.findByConversationId(conversationId);
       const userMessages = allMessages.filter(m => m.role === "user");
       if (userMessages.length === 1) {
         // This is the first user message, update title
         const newTitle = content.substring(0, 50) + (content.length > 50 ? "..." : "");
-        conversationOps.updateTitle(conversationId, newTitle);
+        await conversationOps.updateTitle(conversationId, newTitle);
       }
     }
 
@@ -78,7 +78,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { messageId, content, actionStatus, actionData } = body;
+    const { messageId, actionStatus, actionData } = body;
 
     if (!messageId) {
       return NextResponse.json({ error: "messageId is required" }, { status: 400 });
@@ -86,7 +86,7 @@ export async function PATCH(request: NextRequest) {
 
     // For now, just update action status and data
     if (actionStatus) {
-      messageOps.updateAction(
+      await messageOps.updateAction(
         messageId, 
         actionStatus, 
         actionData ? JSON.stringify(actionData) : undefined
@@ -102,4 +102,3 @@ export async function PATCH(request: NextRequest) {
     );
   }
 }
-

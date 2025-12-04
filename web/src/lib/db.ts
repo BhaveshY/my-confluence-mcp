@@ -1,17 +1,32 @@
-import Database from "better-sqlite3";
-import path from "path";
+import { createClient, Client } from "@libsql/client";
 
-// Database file location - in the project root
-const DB_PATH = path.join(process.cwd(), "confluence-gpt.db");
+// Database client - uses Turso in production, local file in development
+let db: Client | null = null;
 
-// Create database instance
-const db = new Database(DB_PATH);
-
-// Enable WAL mode for better performance
-db.pragma("journal_mode = WAL");
+function getDb(): Client {
+  if (!db) {
+    // Check for Turso environment variables (production)
+    if (process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN) {
+      db = createClient({
+        url: process.env.TURSO_DATABASE_URL,
+        authToken: process.env.TURSO_AUTH_TOKEN,
+      });
+    } else {
+      // Local development fallback - use in-memory or local file
+      // Note: For local dev, you can set up a local Turso or use file:
+      db = createClient({
+        url: "file:confluence-gpt.db",
+      });
+    }
+  }
+  return db;
+}
 
 // Initialize database schema
-db.exec(`
+export async function initializeDatabase(): Promise<void> {
+  const client = getDb();
+  
+  await client.executeMultiple(`
   -- Users table
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +97,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
 `);
 
+  // Clean up expired sessions
+  await client.execute("DELETE FROM sessions WHERE expires_at <= datetime('now')");
+}
+
+// Ensure database is initialized
+let dbInitialized = false;
+async function ensureDbInitialized(): Promise<Client> {
+  if (!dbInitialized) {
+    await initializeDatabase();
+    dbInitialized = true;
+  }
+  return getDb();
+}
+
 // Type definitions
 export interface User {
   id: number;
@@ -137,36 +166,55 @@ export interface Message {
 
 // User operations
 export const userOps = {
-  findByEmail: (email: string): User | undefined => {
-    return db.prepare("SELECT * FROM users WHERE email = ?").get(email) as User | undefined;
+  findByEmail: async (email: string): Promise<User | undefined> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "SELECT * FROM users WHERE email = ?",
+      args: [email],
+    });
+    return result.rows[0] as unknown as User | undefined;
   },
 
-  findById: (id: number): User | undefined => {
-    return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as User | undefined;
+  findById: async (id: number): Promise<User | undefined> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "SELECT * FROM users WHERE id = ?",
+      args: [id],
+    });
+    return result.rows[0] as unknown as User | undefined;
   },
 
-  create: (email: string, passwordHash: string, name: string): User => {
-    const stmt = db.prepare(
-      "INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)"
-    );
-    const result = stmt.run(email, passwordHash, name);
-    return userOps.findById(result.lastInsertRowid as number)!;
+  create: async (email: string, passwordHash: string, name: string): Promise<User> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)",
+      args: [email, passwordHash, name],
+    });
+    const user = await userOps.findById(Number(result.lastInsertRowid));
+    return user!;
   },
 
-  updatePassword: (id: number, passwordHash: string): void => {
-    db.prepare(
-      "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    ).run(passwordHash, id);
+  updatePassword: async (id: number, passwordHash: string): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      args: [passwordHash, id],
+    });
   },
 };
 
 // Settings operations
 export const settingsOps = {
-  findByUserId: (userId: number): UserSettings | undefined => {
-    return db.prepare("SELECT * FROM user_settings WHERE user_id = ?").get(userId) as UserSettings | undefined;
+  findByUserId: async (userId: number): Promise<UserSettings | undefined> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "SELECT * FROM user_settings WHERE user_id = ?",
+      args: [userId],
+    });
+    return result.rows[0] as unknown as UserSettings | undefined;
   },
 
-  upsert: (
+  upsert: async (
     userId: number,
     settings: {
       confluence_domain?: string | null;
@@ -177,11 +225,13 @@ export const settingsOps = {
       ai_model?: string;
       ai_enabled?: boolean;
     }
-  ): UserSettings => {
-    const existing = settingsOps.findByUserId(userId);
+  ): Promise<UserSettings> => {
+    const client = await ensureDbInitialized();
+    const existing = await settingsOps.findByUserId(userId);
 
     if (existing) {
-      db.prepare(`
+      await client.execute({
+        sql: `
         UPDATE user_settings SET
           confluence_domain = COALESCE(?, confluence_domain),
           confluence_email = COALESCE(?, confluence_email),
@@ -192,23 +242,27 @@ export const settingsOps = {
           ai_enabled = COALESCE(?, ai_enabled),
           updated_at = CURRENT_TIMESTAMP
         WHERE user_id = ?
-      `).run(
-        settings.confluence_domain,
-        settings.confluence_email,
-        settings.confluence_token,
-        settings.ai_api_key,
-        settings.ai_base_url,
-        settings.ai_model,
-        settings.ai_enabled !== undefined ? (settings.ai_enabled ? 1 : 0) : undefined,
-        userId
-      );
+        `,
+        args: [
+          settings.confluence_domain ?? null,
+          settings.confluence_email ?? null,
+          settings.confluence_token ?? null,
+          settings.ai_api_key ?? null,
+          settings.ai_base_url ?? null,
+          settings.ai_model ?? null,
+          settings.ai_enabled !== undefined ? (settings.ai_enabled ? 1 : 0) : null,
+          userId,
+        ],
+      });
     } else {
-      db.prepare(`
+      await client.execute({
+        sql: `
         INSERT INTO user_settings (
           user_id, confluence_domain, confluence_email, confluence_token,
           ai_api_key, ai_base_url, ai_model, ai_enabled
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+        `,
+        args: [
         userId,
         settings.confluence_domain || null,
         settings.confluence_email || null,
@@ -216,24 +270,30 @@ export const settingsOps = {
         settings.ai_api_key || null,
         settings.ai_base_url || "https://api.deepseek.com",
         settings.ai_model || "deepseek-chat",
-        settings.ai_enabled ? 1 : 0
-      );
+          settings.ai_enabled ? 1 : 0,
+        ],
+      });
     }
 
-    return settingsOps.findByUserId(userId)!;
+    return (await settingsOps.findByUserId(userId))!;
   },
 };
 
 // Session operations
 export const sessionOps = {
-  findByToken: (token: string): (Session & { user: User }) | undefined => {
-    const session = db.prepare(`
+  findByToken: async (token: string): Promise<(Session & { user: User }) | undefined> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: `
       SELECT s.*, u.id as user_id, u.email, u.name, u.created_at as user_created_at
       FROM sessions s
       JOIN users u ON s.user_id = u.id
       WHERE s.token = ? AND s.expires_at > datetime('now')
-    `).get(token) as any;
+      `,
+      args: [token],
+    });
 
+    const session = result.rows[0] as any;
     if (!session) return undefined;
 
     return {
@@ -253,83 +313,120 @@ export const sessionOps = {
     };
   },
 
-  create: (userId: number, token: string, expiresAt: Date): Session => {
-    const stmt = db.prepare(
-      "INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)"
-    );
-    const result = stmt.run(userId, token, expiresAt.toISOString());
-    return db.prepare("SELECT * FROM sessions WHERE id = ?").get(result.lastInsertRowid) as Session;
+  create: async (userId: number, token: string, expiresAt: Date): Promise<Session> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)",
+      args: [userId, token, expiresAt.toISOString()],
+    });
+    const sessionResult = await client.execute({
+      sql: "SELECT * FROM sessions WHERE id = ?",
+      args: [Number(result.lastInsertRowid)],
+    });
+    return sessionResult.rows[0] as unknown as Session;
   },
 
-  deleteByToken: (token: string): void => {
-    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+  deleteByToken: async (token: string): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "DELETE FROM sessions WHERE token = ?",
+      args: [token],
+    });
   },
 
-  deleteByUserId: (userId: number): void => {
-    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  deleteByUserId: async (userId: number): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "DELETE FROM sessions WHERE user_id = ?",
+      args: [userId],
+    });
   },
 
-  deleteExpired: (): void => {
-    db.prepare("DELETE FROM sessions WHERE expires_at <= datetime('now')").run();
+  deleteExpired: async (): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute("DELETE FROM sessions WHERE expires_at <= datetime('now')");
   },
 };
 
-// Clean up expired sessions periodically
-sessionOps.deleteExpired();
-
 // Conversation operations
 export const conversationOps = {
-  findById: (id: number): Conversation | undefined => {
-    return db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as Conversation | undefined;
+  findById: async (id: number): Promise<Conversation | undefined> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "SELECT * FROM conversations WHERE id = ?",
+      args: [id],
+    });
+    return result.rows[0] as unknown as Conversation | undefined;
   },
 
-  findByUserId: (userId: number, limit = 50): Conversation[] => {
-    return db.prepare(`
+  findByUserId: async (userId: number, limit = 50): Promise<Conversation[]> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: `
       SELECT * FROM conversations 
       WHERE user_id = ? 
       ORDER BY updated_at DESC 
       LIMIT ?
-    `).all(userId, limit) as Conversation[];
+      `,
+      args: [userId, limit],
+    });
+    return result.rows as unknown as Conversation[];
   },
 
-  create: (userId: number, title: string): Conversation => {
-    const stmt = db.prepare(
-      "INSERT INTO conversations (user_id, title) VALUES (?, ?)"
-    );
-    const result = stmt.run(userId, title);
-    return conversationOps.findById(result.lastInsertRowid as number)!;
+  create: async (userId: number, title: string): Promise<Conversation> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
+      args: [userId, title],
+    });
+    return (await conversationOps.findById(Number(result.lastInsertRowid)))!;
   },
 
-  updateTitle: (id: number, title: string): void => {
-    db.prepare(
-      "UPDATE conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    ).run(title, id);
+  updateTitle: async (id: number, title: string): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "UPDATE conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      args: [title, id],
+    });
   },
 
-  touch: (id: number): void => {
-    db.prepare(
-      "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    ).run(id);
+  touch: async (id: number): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      args: [id],
+    });
   },
 
-  delete: (id: number): void => {
-    db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+  delete: async (id: number): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "DELETE FROM conversations WHERE id = ?",
+      args: [id],
+    });
   },
 
-  deleteByUserId: (userId: number): void => {
-    db.prepare("DELETE FROM conversations WHERE user_id = ?").run(userId);
+  deleteByUserId: async (userId: number): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "DELETE FROM conversations WHERE user_id = ?",
+      args: [userId],
+    });
   },
 };
 
 // Message operations
 export const messageOps = {
-  findByConversationId: (conversationId: number): Message[] => {
-    return db.prepare(
-      "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC"
-    ).all(conversationId) as Message[];
+  findByConversationId: async (conversationId: number): Promise<Message[]> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+      args: [conversationId],
+    });
+    return result.rows as unknown as Message[];
   },
 
-  create: (
+  create: async (
     conversationId: number,
     message: {
       role: "user" | "assistant";
@@ -340,15 +437,17 @@ export const messageOps = {
       action_status?: string;
       action_data?: string;
     }
-  ): Message => {
-    const stmt = db.prepare(`
+  ): Promise<Message> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: `
       INSERT INTO messages (
         conversation_id, role, content, 
         attachment_filename, attachment_preview,
         action_type, action_status, action_data
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const result = stmt.run(
+      `,
+      args: [
       conversationId,
       message.role,
       message.content,
@@ -356,27 +455,36 @@ export const messageOps = {
       message.attachment_preview || null,
       message.action_type || null,
       message.action_status || null,
-      message.action_data || null
-    );
+        message.action_data || null,
+      ],
+    });
     
     // Update conversation timestamp
-    conversationOps.touch(conversationId);
+    await conversationOps.touch(conversationId);
     
-    return db.prepare("SELECT * FROM messages WHERE id = ?").get(result.lastInsertRowid) as Message;
+    const msgResult = await client.execute({
+      sql: "SELECT * FROM messages WHERE id = ?",
+      args: [Number(result.lastInsertRowid)],
+    });
+    return msgResult.rows[0] as unknown as Message;
   },
 
-  updateAction: (id: number, status: string, data?: string): void => {
-    db.prepare(
-      "UPDATE messages SET action_status = ?, action_data = COALESCE(?, action_data) WHERE id = ?"
-    ).run(status, data || null, id);
+  updateAction: async (id: number, status: string, data?: string): Promise<void> => {
+    const client = await ensureDbInitialized();
+    await client.execute({
+      sql: "UPDATE messages SET action_status = ?, action_data = COALESCE(?, action_data) WHERE id = ?",
+      args: [status, data || null, id],
+    });
   },
 
-  getLastMessage: (conversationId: number): Message | undefined => {
-    return db.prepare(
-      "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1"
-    ).get(conversationId) as Message | undefined;
+  getLastMessage: async (conversationId: number): Promise<Message | undefined> => {
+    const client = await ensureDbInitialized();
+    const result = await client.execute({
+      sql: "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
+      args: [conversationId],
+    });
+    return result.rows[0] as unknown as Message | undefined;
   },
 };
 
-export default db;
-
+export default getDb;

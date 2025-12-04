@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     await setSessionCookie(result.token);
 
     // Get user settings
-    const settings = settingsOps.findByUserId(result.user.id);
+    const settings = await settingsOps.findByUserId(result.user.id);
 
     return NextResponse.json({
       user: result.user,
@@ -45,4 +45,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

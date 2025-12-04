@@ -11,11 +11,12 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const conversations = conversationOps.findByUserId(currentUser.user.id);
+    const conversations = await conversationOps.findByUserId(currentUser.user.id);
 
     // Add last message preview to each conversation
-    const conversationsWithPreview = conversations.map((conv) => {
-      const lastMessage = messageOps.getLastMessage(conv.id);
+    const conversationsWithPreview = await Promise.all(
+      conversations.map(async (conv) => {
+        const lastMessage = await messageOps.getLastMessage(conv.id);
       return {
         ...conv,
         lastMessage: lastMessage ? {
@@ -24,7 +25,8 @@ export async function GET() {
           created_at: lastMessage.created_at,
         } : null,
       };
-    });
+      })
+    );
 
     return NextResponse.json({ conversations: conversationsWithPreview });
   } catch (error) {
@@ -48,7 +50,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { title } = body;
 
-    const conversation = conversationOps.create(
+    const conversation = await conversationOps.create(
       currentUser.user.id,
       title || `Chat ${new Date().toLocaleDateString()}`
     );
@@ -72,7 +74,7 @@ export async function DELETE() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    conversationOps.deleteByUserId(currentUser.user.id);
+    await conversationOps.deleteByUserId(currentUser.user.id);
 
     return NextResponse.json({ message: "All conversations deleted" });
   } catch (error) {
@@ -83,4 +85,3 @@ export async function DELETE() {
     );
   }
 }
-

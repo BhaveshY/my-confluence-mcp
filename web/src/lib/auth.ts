@@ -49,17 +49,17 @@ export async function registerUser(
   }
 
   // Check if user exists
-  const existingUser = userOps.findByEmail(email.toLowerCase());
+  const existingUser = await userOps.findByEmail(email.toLowerCase());
   if (existingUser) {
     return { success: false, error: "Email already registered" };
   }
 
   // Hash password and create user
   const passwordHash = await hashPassword(password);
-  const user = userOps.create(email.toLowerCase(), passwordHash, name);
+  const user = await userOps.create(email.toLowerCase(), passwordHash, name);
 
   // Create initial empty settings for user
-  settingsOps.upsert(user.id, {});
+  await settingsOps.upsert(user.id, {});
 
   const { password_hash: _, ...userWithoutPassword } = user;
   return { success: true, user: userWithoutPassword };
@@ -76,7 +76,7 @@ export async function loginUser(
   }
 
   // Find user
-  const user = userOps.findByEmail(email.toLowerCase());
+  const user = await userOps.findByEmail(email.toLowerCase());
   if (!user) {
     return { success: false, error: "Invalid email or password" };
   }
@@ -92,7 +92,7 @@ export async function loginUser(
   const expiresAt = new Date(Date.now() + SESSION_DURATION);
 
   // Store session in database
-  sessionOps.create(user.id, token, expiresAt);
+  await sessionOps.create(user.id, token, expiresAt);
 
   const { password_hash: _, ...userWithoutPassword } = user;
   return { success: true, user: userWithoutPassword, token };
@@ -100,7 +100,7 @@ export async function loginUser(
 
 // Logout user
 export async function logoutUser(token: string): Promise<void> {
-  sessionOps.deleteByToken(token);
+  await sessionOps.deleteByToken(token);
 }
 
 // Get current user from session
@@ -123,13 +123,13 @@ export async function getCurrentUser(): Promise<{
     }
 
     // Check session in database
-    const session = sessionOps.findByToken(sessionCookie.value);
+    const session = await sessionOps.findByToken(sessionCookie.value);
     if (!session) {
       return null;
     }
 
     // Get user settings
-    const settings = settingsOps.findByUserId(session.user.id) || null;
+    const settings = (await settingsOps.findByUserId(session.user.id)) || null;
 
     const { password_hash: _, ...userWithoutPassword } = session.user;
     return { user: userWithoutPassword, settings };
@@ -139,10 +139,10 @@ export async function getCurrentUser(): Promise<{
 }
 
 // Get user from token (for API routes)
-export function getUserFromToken(token: string): {
+export async function getUserFromToken(token: string): Promise<{
   user: Omit<User, "password_hash">;
   settings: UserSettings | null;
-} | null {
+} | null> {
   // Verify JWT
   const decoded = verifySessionToken(token);
   if (!decoded) {
@@ -150,13 +150,13 @@ export function getUserFromToken(token: string): {
   }
 
   // Check session in database
-  const session = sessionOps.findByToken(token);
+  const session = await sessionOps.findByToken(token);
   if (!session) {
     return null;
   }
 
   // Get user settings
-  const settings = settingsOps.findByUserId(session.user.id) || null;
+  const settings = (await settingsOps.findByUserId(session.user.id)) || null;
 
   const { password_hash: _, ...userWithoutPassword } = session.user;
   return { user: userWithoutPassword, settings };
@@ -195,4 +195,3 @@ export async function updateUserSettings(
 ): Promise<UserSettings> {
   return settingsOps.upsert(userId, settings);
 }
-
