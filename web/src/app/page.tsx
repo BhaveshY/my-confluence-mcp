@@ -197,10 +197,51 @@ export default function HomePage() {
     setIsLoading(true);
 
     try {
-      // Build the context for AI
+      // Build the context for AI with better intent understanding
       let contextMessage = userMessage;
+      
       if (currentFile) {
-        contextMessage = `[User uploaded a file: ${currentFile.fileName}]\n\nFile content:\n${currentFile.content}\n\n---\nUser request: ${userMessage || "Create a Confluence page from this document"}`;
+        // Resolve pronouns and vague references to the actual file
+        let resolvedRequest = userMessage || "Create a Confluence page from this document";
+        
+        // Replace common vague references with explicit file reference
+        const vaguePatterns = [
+          /\b(this|it|that|the file|the document|the pdf|the content)\b/gi,
+        ];
+        
+        // If user message contains vague references, make them explicit
+        const hasVagueReference = vaguePatterns.some(p => p.test(resolvedRequest));
+        
+        if (hasVagueReference || !userMessage) {
+          // Explicitly tell AI what to do with the document
+          const fileBaseName = currentFile.fileName.replace(/\.[^/.]+$/, "");
+          contextMessage = `DOCUMENT PROCESSING REQUEST
+
+The user has uploaded a document and wants you to create a Confluence page from it.
+
+=== UPLOADED DOCUMENT ===
+File name: ${currentFile.fileName}
+Suggested title: ${fileBaseName}
+
+Document content:
+---
+${currentFile.content}
+---
+
+=== USER'S REQUEST ===
+"${resolvedRequest}"
+
+=== YOUR TASK ===
+1. Extract the key information from the document above
+2. Create a well-structured Confluence page with proper HTML formatting
+3. Use a descriptive title based on the document content (or use "${fileBaseName}" if content doesn't suggest a better title)
+4. Format the content with headings (h2, h3), paragraphs, lists, and tables as appropriate
+
+Respond with JSON containing: type="create", title, and content (HTML formatted).`;
+        } else {
+          // User gave a specific instruction (like search), preserve it
+          contextMessage = `[User uploaded file: ${currentFile.fileName}]\n\nFile content:\n${currentFile.content}\n\n---\nUser request: ${resolvedRequest}`;
+        }
       }
 
       // Parse intent (AI or rule-based)

@@ -8,55 +8,92 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No API key provided" }, { status: 400 });
     }
 
-    // Check if this is a document-based request
-    const isDocumentRequest = message.includes("[User uploaded a file:");
+    // Check if this is a document-based request (multiple indicators)
+    const isDocumentRequest = 
+      message.includes("DOCUMENT PROCESSING REQUEST") ||
+      message.includes("[User uploaded") ||
+      message.includes("Document content:") ||
+      message.includes("File content:");
     
-    // Different system prompts based on context
-    const systemPrompts: Record<string, string> = {
-      parse: `You are a Confluence command parser and document processor. Analyze user messages and return JSON.
+    // System prompt specifically for document processing
+    const documentProcessingPrompt = `You are a Confluence page creator. Your ONLY job is to create a well-formatted page from the provided document.
 
-IMPORTANT RULES:
-1. If user uploaded a document, you MUST extract the content and create a well-formatted Confluence page
-2. Determine the intent:
-   - "create" - They want to create a new page (including from uploaded documents)
-   - "search" - They want to find/search for existing pages  
-   - "spaces" - They want to list available spaces
-   - "help" - They're asking what you can do
-   - "chat" - They're asking a question or having a conversation
+CRITICAL: The user uploaded a document. You MUST:
+1. Read and understand ALL the document content provided
+2. Create a proper Confluence page with the full content
+3. Use proper HTML formatting
 
-Return JSON format:
-{
-  "type": "create" | "search" | "spaces" | "help" | "chat",
-  "title": "page title - create a descriptive title based on the content",
-  "content": "HTML content - properly formatted with h2, h3, p, ul, li, table tags",
-  "query": "search term if searching",
-  "answer": "your response if type is chat"
-}
-
-WHEN PROCESSING DOCUMENTS:
-- Extract the key information and structure it properly
-- Use proper HTML headings (h2 for main sections, h3 for subsections)
-- Use lists (ul/li) for bullet points
-- Use tables (table/tr/th/td) for tabular data
-- Use paragraphs (p) for text blocks
-- Add emojis to section headings for visual appeal
-- Create a clear, scannable document structure
-- The title should reflect the document's purpose
-
-Example for a meeting notes document:
+OUTPUT FORMAT - Return ONLY this JSON:
 {
   "type": "create",
-  "title": "Team Standup - December 4, 2025",
-  "content": "<h2>📋 Meeting Overview</h2><p>Weekly team standup meeting...</p><h2>📝 Discussion Points</h2><ul><li>Point 1</li><li>Point 2</li></ul><h2>✅ Action Items</h2><ul><li>[ ] Task 1 - @person</li></ul>"
+  "title": "A descriptive title based on document content",
+  "content": "<h2>Section</h2><p>Content...</p>..."
 }
 
-Return ONLY valid JSON, no markdown or explanations.`,
+HTML FORMATTING RULES:
+- Use <h2> for main sections (with emojis like 📋 📝 ✅)
+- Use <h3> for subsections
+- Use <p> for paragraphs
+- Use <ul><li>...</li></ul> for bullet lists
+- Use <ol><li>...</li></ol> for numbered lists
+- Use <table><tr><th>...</th></tr><tr><td>...</td></tr></table> for tables
+- Use <strong> for bold, <em> for italic
+- Use <code> for code snippets
+- Use <blockquote> for quotes
 
-      chat: `You are a helpful Confluence assistant. Answer questions naturally and conversationally.`,
-    };
+IMPORTANT:
+- Extract and include ALL meaningful content from the document
+- Organize the content logically with proper sections
+- Don't truncate or summarize unless the content is extremely long
+- The title should describe what the document is about
+- DO NOT include phrases like "for this" or "from the document" - use actual content
 
-    // Adjust prompt for document processing
-    let systemPrompt = systemPrompts[mode] || systemPrompts.parse;
+Return ONLY valid JSON. No explanations, no markdown blocks.`;
+
+    // System prompt for general commands
+    const commandParsingPrompt = `You are a Confluence assistant that parses user commands. Analyze what the user wants and return JSON.
+
+INTENTS:
+- "create": User wants to create a new page. Extract title from their message.
+- "search": User wants to find pages. Extract the search query.
+- "spaces": User wants to list available spaces.
+- "help": User is asking what you can do.
+- "chat": User is asking a general question.
+
+UNDERSTANDING CONTEXT:
+- If user says "create a page called X" → type: create, title: X
+- If user says "find pages about Y" → type: search, query: Y
+- If user mentions "this", "it", "the document" with no file context → ask for clarification
+
+OUTPUT JSON:
+{
+  "type": "create" | "search" | "spaces" | "help" | "chat",
+  "title": "page title for create",
+  "content": "HTML content for create",
+  "query": "search terms for search",
+  "answer": "response for chat/help"
+}
+
+For "create" without document:
+- Generate appropriate template content based on the title
+- Meeting notes → include Attendees, Agenda, Notes, Action Items sections
+- Status update → include Highlights, In Progress, Blockers sections
+- Generic → include a basic structure
+
+Return ONLY valid JSON.`;
+
+    // Select the appropriate prompt
+    let systemPrompt: string;
+    if (isDocumentRequest) {
+      systemPrompt = documentProcessingPrompt;
+    } else if (mode === "chat") {
+      systemPrompt = "You are a helpful Confluence assistant. Answer questions naturally and conversationally.";
+    } else {
+      systemPrompt = commandParsingPrompt;
+    }
+    
+    console.log("🤖 AI Request - Document mode:", isDocumentRequest);
+    console.log("🤖 Message preview:", message.substring(0, 200) + "...");
     
     const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
@@ -70,8 +107,9 @@ Return ONLY valid JSON, no markdown or explanations.`,
           { role: "system", content: systemPrompt },
           { role: "user", content: message },
         ],
-        temperature: isDocumentRequest ? 0.3 : 0.2,
-        max_tokens: isDocumentRequest ? 4000 : 1500,
+        // Lower temperature for more consistent output, more tokens for documents
+        temperature: isDocumentRequest ? 0.1 : 0.2,
+        max_tokens: isDocumentRequest ? 8000 : 2000,
       }),
     });
 
@@ -95,9 +133,18 @@ Return ONLY valid JSON, no markdown or explanations.`,
 
     // For parse mode, extract JSON
     try {
-      // Try to find JSON in the response
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      console.log("🤖 Raw AI response:", content.substring(0, 500));
+      
+      // Try to find JSON in the response (handle various formats)
+      let jsonStr = content;
+      
+      // Remove markdown code blocks if present
+      jsonStr = jsonStr.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
+      
+      // Find the JSON object
+      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
+        console.error("No JSON found in response:", content);
         // If no JSON found, treat as a chat response
         return NextResponse.json({
           type: "chat",
@@ -107,17 +154,40 @@ Return ONLY valid JSON, no markdown or explanations.`,
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
+      console.log("🤖 Parsed result - type:", parsed.type, "title:", parsed.title);
+      
+      // Validate the title - reject vague/placeholder titles
+      let title = parsed.title || "";
+      if (title && (
+        title.toLowerCase().includes("for this") ||
+        title.toLowerCase() === "this" ||
+        title.toLowerCase() === "document" ||
+        title.toLowerCase() === "untitled" ||
+        title.length < 3
+      )) {
+        // Try to generate a better title from content
+        console.log("🤖 Detected vague title, attempting to improve");
+        title = "Imported Document - " + new Date().toLocaleDateString();
+      }
       
       // Validate and clean HTML content
       let htmlContent = parsed.content || "";
       if (htmlContent && !htmlContent.includes("<")) {
-        // If content isn't HTML, wrap it in paragraph tags
-        htmlContent = `<p>${htmlContent.replace(/\n/g, "</p><p>")}</p>`;
+        // If content isn't HTML, wrap it properly
+        htmlContent = htmlContent
+          .split("\n\n")
+          .map((p: string) => `<p>${p.trim()}</p>`)
+          .join("");
+      }
+      
+      // Ensure we have actual content for create operations
+      if (parsed.type === "create" && !htmlContent) {
+        htmlContent = "<p>Page created via Confluence GPT.</p>";
       }
 
       return NextResponse.json({
         type: parsed.type || "create",
-        title: parsed.title,
+        title: title,
         content: htmlContent,
         query: parsed.query,
         space: parsed.space,
@@ -125,7 +195,7 @@ Return ONLY valid JSON, no markdown or explanations.`,
         confidence: 0.95,
       });
     } catch (parseError) {
-      console.error("JSON parse error:", parseError);
+      console.error("JSON parse error:", parseError, "Content:", content);
       // If JSON parsing fails, treat as chat
       return NextResponse.json({
         type: "chat",
