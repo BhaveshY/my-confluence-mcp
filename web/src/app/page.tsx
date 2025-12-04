@@ -213,31 +213,28 @@ export default function HomePage() {
         const hasVagueReference = vaguePatterns.some(p => p.test(resolvedRequest));
         
         if (hasVagueReference || !userMessage) {
-          // Explicitly tell AI what to do with the document
+          // Explicitly tell AI what to do with the document - PRESERVE ALL CONTENT
           const fileBaseName = currentFile.fileName.replace(/\.[^/.]+$/, "");
           contextMessage = `DOCUMENT PROCESSING REQUEST
 
-The user has uploaded a document and wants you to create a Confluence page from it.
+IMPORTANT: Convert this ENTIRE document to a Confluence page. Include ALL content - do not summarize or skip anything.
 
-=== UPLOADED DOCUMENT ===
-File name: ${currentFile.fileName}
-Suggested title: ${fileBaseName}
+=== DOCUMENT TO CONVERT ===
+File: ${currentFile.fileName}
+Default title if none found: ${fileBaseName}
 
-Document content:
----
+--- FULL DOCUMENT CONTENT START ---
 ${currentFile.content}
----
+--- FULL DOCUMENT CONTENT END ---
 
-=== USER'S REQUEST ===
-"${resolvedRequest}"
+=== INSTRUCTIONS ===
+1. Create a Confluence page containing ALL the text from this document
+2. Include EVERY paragraph, EVERY list item, EVERY detail - nothing should be left out
+3. Format with HTML tags (h2, h3, p, ul, ol, li, table, etc.)
+4. Use a title from the document, or "${fileBaseName}" if no title is found
+5. DO NOT summarize - include the complete content
 
-=== YOUR TASK ===
-1. Extract the key information from the document above
-2. Create a well-structured Confluence page with proper HTML formatting
-3. Use a descriptive title based on the document content (or use "${fileBaseName}" if content doesn't suggest a better title)
-4. Format the content with headings (h2, h3), paragraphs, lists, and tables as appropriate
-
-Respond with JSON containing: type="create", title, and content (HTML formatted).`;
+Return JSON: {"type": "create", "title": "...", "content": "<full HTML content>"}`;
         } else {
           // User gave a specific instruction (like search), preserve it
           contextMessage = `[User uploaded file: ${currentFile.fileName}]\n\nFile content:\n${currentFile.content}\n\n---\nUser request: ${resolvedRequest}`;

@@ -21,39 +21,60 @@ export async function POST(request: NextRequest) {
         const buffer = new Uint8Array(arrayBuffer);
         const result = await extractText(buffer);
         
-        console.log("PDF parse result type:", typeof result);
-        console.log("PDF parse result:", JSON.stringify(result).slice(0, 500));
+        console.log("📄 PDF parse result type:", typeof result);
+        console.log("📄 PDF parse result preview:", JSON.stringify(result).slice(0, 500));
         
-        // Handle all possible return types from unpdf
+        // Handle all possible return types from unpdf - be very defensive
+        let extractedText = "";
+        
         if (typeof result === "string") {
-          content = result;
+          extractedText = result;
         } else if (result && typeof result === "object") {
-          if (typeof result.text === "string") {
-            content = result.text;
-          } else if (Array.isArray(result.text)) {
-            content = result.text.join("\n\n");
-          } else if ("totalPages" in result) {
-            // Try to get text from pages
-            content = String(result.text || "");
+          // Check for text property in various forms
+          const textValue = (result as Record<string, unknown>).text;
+          
+          if (typeof textValue === "string") {
+            extractedText = textValue;
+          } else if (Array.isArray(textValue)) {
+            // Join array of strings
+            extractedText = textValue.map(item => String(item || "")).join("\n\n");
+          } else if (textValue !== undefined && textValue !== null) {
+            extractedText = String(textValue);
+          }
+          
+          // Also check for pages array with text
+          const pages = (result as Record<string, unknown>).pages;
+          if (!extractedText && Array.isArray(pages)) {
+            extractedText = pages
+              .map((page: unknown) => {
+                if (typeof page === "string") return page;
+                if (page && typeof page === "object" && "text" in page) {
+                  return String((page as { text: unknown }).text || "");
+                }
+                return "";
+              })
+              .filter(Boolean)
+              .join("\n\n");
           }
         }
         
-        if (!content) {
-          content = "";
-        }
+        // Ensure we have a string
+        content = extractedText || "";
         
-        const trimmed = content.trim();
-        if (!trimmed || trimmed.length === 0) {
+        // Check if we got any content
+        const trimmedContent = typeof content === "string" ? content.trim() : "";
+        if (!trimmedContent || trimmedContent.length === 0) {
           return NextResponse.json(
-            { error: "PDF appears to be empty or contains only images." },
+            { error: "PDF appears to be empty or contains only images. Try a text-based PDF." },
             { status: 400 }
           );
         }
-        content = trimmed;
+        content = trimmedContent;
+        console.log("📄 PDF extracted text length:", content.length);
       } catch (pdfError) {
         console.error("PDF parsing error:", pdfError);
         return NextResponse.json(
-          { error: "Failed to parse PDF. Try a different file." },
+          { error: "Failed to parse PDF. The file may be corrupted or image-only. Try a different file." },
           { status: 400 }
         );
       }
@@ -101,11 +122,13 @@ export async function POST(request: NextRequest) {
       .replace(/\n{3,}/g, "\n\n")
       .trim();
 
-    // Limit length
-    const maxLength = 15000;
+    // Increased limit for better document processing
+    const maxLength = 50000;
     if (content.length > maxLength) {
-      content = content.substring(0, maxLength) + "\n\n[Truncated...]";
+      content = content.substring(0, maxLength) + "\n\n[Content truncated due to length - original was " + content.length + " characters]";
     }
+    
+    console.log("📄 Uploaded file:", fileName, "Content length:", content.length);
 
     if (!content || content.length === 0) {
       return NextResponse.json(

@@ -15,40 +15,62 @@ export async function POST(request: NextRequest) {
       message.includes("Document content:") ||
       message.includes("File content:");
     
-    // System prompt specifically for document processing
-    const documentProcessingPrompt = `You are a Confluence page creator. Your ONLY job is to create a well-formatted page from the provided document.
+    // System prompt specifically for document processing - VERY EXPLICIT
+    const documentProcessingPrompt = `You are a document-to-Confluence converter. Convert the uploaded document to a Confluence page.
 
-CRITICAL: The user uploaded a document. You MUST:
-1. Read and understand ALL the document content provided
-2. Create a proper Confluence page with the full content
-3. Use proper HTML formatting
+## CRITICAL RULES - YOU MUST FOLLOW THESE:
 
-OUTPUT FORMAT - Return ONLY this JSON:
+1. **INCLUDE EVERYTHING** - Do NOT summarize. Do NOT shorten. Include ALL text from the document.
+2. **PRESERVE ALL DETAILS** - Every paragraph, every bullet point, every piece of information must be in the output.
+3. **NO SUMMARIZATION** - If the document has 50 items, your output must have 50 items. Not 5. Not 10. ALL 50.
+4. **VERBATIM CONTENT** - Copy the actual text content, don't paraphrase or condense it.
+
+## OUTPUT FORMAT - Return ONLY this JSON:
+
 {
   "type": "create",
-  "title": "A descriptive title based on document content",
-  "content": "<h2>Section</h2><p>Content...</p>..."
+  "title": "Exact title from document OR descriptive title based on content",
+  "content": "FULL HTML content with ALL document text"
 }
 
-HTML FORMATTING RULES:
-- Use <h2> for main sections (with emojis like 📋 📝 ✅)
-- Use <h3> for subsections
-- Use <p> for paragraphs
-- Use <ul><li>...</li></ul> for bullet lists
-- Use <ol><li>...</li></ol> for numbered lists
-- Use <table><tr><th>...</th></tr><tr><td>...</td></tr></table> for tables
-- Use <strong> for bold, <em> for italic
-- Use <code> for code snippets
-- Use <blockquote> for quotes
+## HTML FORMATTING:
 
-IMPORTANT:
-- Extract and include ALL meaningful content from the document
-- Organize the content logically with proper sections
-- Don't truncate or summarize unless the content is extremely long
-- The title should describe what the document is about
-- DO NOT include phrases like "for this" or "from the document" - use actual content
+- <h2>📋 Section Title</h2> for main sections
+- <h3>Subsection</h3> for subsections  
+- <p>Paragraph text here</p> for paragraphs
+- <ul><li>Item 1</li><li>Item 2</li></ul> for bullet lists
+- <ol><li>Step 1</li><li>Step 2</li></ol> for numbered lists
+- <table><tr><th>Header</th></tr><tr><td>Data</td></tr></table> for tables
+- <strong>bold</strong> and <em>italic</em> for emphasis
+- <code>code</code> for code/technical terms
 
-Return ONLY valid JSON. No explanations, no markdown blocks.`;
+## WHAT TO INCLUDE:
+
+- ALL headings and sections from the document
+- ALL paragraphs of text
+- ALL list items (every single one)
+- ALL table data (every row and column)
+- ALL names, dates, numbers, and specific details
+- ALL action items, tasks, or to-dos
+
+## WHAT NOT TO DO:
+
+- Do NOT say "etc." or "and more" - list everything
+- Do NOT summarize sections - include full text
+- Do NOT skip "less important" content
+- Do NOT use placeholder text like "..." or "[more items]"
+- Do NOT truncate lists
+
+## EXAMPLE:
+
+If document says:
+"Attendees: John, Mary, Bob, Alice, Tom
+Agenda: 1. Review Q3 results 2. Discuss budget 3. Plan Q4"
+
+Your output MUST include:
+"<h2>👥 Attendees</h2><ul><li>John</li><li>Mary</li><li>Bob</li><li>Alice</li><li>Tom</li></ul><h2>📋 Agenda</h2><ol><li>Review Q3 results</li><li>Discuss budget</li><li>Plan Q4</li></ol>"
+
+Return ONLY the JSON object. No markdown, no explanations.`;
 
     // System prompt for general commands
     const commandParsingPrompt = `You are a Confluence assistant that parses user commands. Analyze what the user wants and return JSON.
@@ -107,9 +129,9 @@ Return ONLY valid JSON.`;
           { role: "system", content: systemPrompt },
           { role: "user", content: message },
         ],
-        // Lower temperature for more consistent output, more tokens for documents
-        temperature: isDocumentRequest ? 0.1 : 0.2,
-        max_tokens: isDocumentRequest ? 8000 : 2000,
+        // Lower temperature for accuracy, high tokens for full document content
+        temperature: isDocumentRequest ? 0.05 : 0.2,
+        max_tokens: isDocumentRequest ? 16000 : 2000,
       }),
     });
 
