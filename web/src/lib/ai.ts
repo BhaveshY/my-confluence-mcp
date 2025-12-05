@@ -161,7 +161,12 @@ export async function parseIntent(message: string, aiApiKey?: string): Promise<P
   // Always try AI first if configured
   if (aiApiKey && aiApiKey.trim()) {
     console.log("🤖 AI is configured, using DeepSeek");
-    return parseWithAI(message, aiApiKey);
+    const aiIntent = await parseWithAI(message, aiApiKey);
+    // Fallback: if AI marks as search but omitted query, use the user's message.
+    if (aiIntent.type === "search" && (!aiIntent.query || !aiIntent.query.trim())) {
+      aiIntent.query = message.trim();
+    }
+    return aiIntent;
   }
   
   // Fall back to rules only when no AI key
