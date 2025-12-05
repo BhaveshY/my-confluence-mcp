@@ -36,11 +36,16 @@ export async function GET(request: NextRequest) {
       const escapedQuery = escapeCqlValue(query);
       const tokens = escapedQuery.split(/\s+/).filter(Boolean);
 
-      // Require all words to appear in the title (prefix match) OR match the full phrase anywhere in the page.
+      // Require all words to appear in the title (prefix match) and also search for the full phrase in text/title.
       const titleClause = tokens.length
         ? tokens.map((token) => `title ~ "${token}*"`).join(" AND ")
         : `title ~ "${escapedQuery}"`;
-      const phraseClause = `text ~ "\\"${escapedQuery}\\""`;
+
+      const phraseClause = [
+        `text ~ "\\"${escapedQuery}\\""`, // exact phrase anywhere in the page
+        `text ~ "${escapedQuery}"`,       // loose match across text
+        `title ~ "\\"${escapedQuery}\\""`,// exact phrase in title
+      ].join(" OR ");
 
       cqlParts.push(`(${phraseClause} OR (${titleClause}) OR title ~ "${escapedQuery}")`);
     }
