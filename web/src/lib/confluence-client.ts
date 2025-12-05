@@ -22,9 +22,13 @@ export const getApiClient = (settings: ConfluenceSettings) => {
       return res.data;
     },
 
-    searchPages: async (query?: string) => {
-      const params = query ? `?title=${encodeURIComponent(query)}` : "";
-      const res = await client.get(`/pages${params}`);
+    searchPages: async (query?: string, spaceKey?: string) => {
+      const params = new URLSearchParams();
+      if (query) params.set("query", query);
+      if (spaceKey) params.set("spaceKey", spaceKey);
+      const queryString = params.toString();
+
+      const res = await client.get(`/pages${queryString ? `?${queryString}` : ""}`);
       return res.data;
     },
 

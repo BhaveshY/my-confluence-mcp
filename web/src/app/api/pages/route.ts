@@ -16,21 +16,41 @@ const getAuthHeaders = (req: NextRequest) => {
   };
 };
 
+const escapeCqlValue = (value: string) => value.replace(/["\\]/g, "\\$&").trim();
+
 export async function GET(request: NextRequest) {
   try {
     const { domain, authHeader } = getAuthHeaders(request);
     const { searchParams } = new URL(request.url);
-    const title = searchParams.get("title");
+    // Support both legacy "title" and new "query" params; prefer the more flexible query.
+    const query = searchParams.get("query") || searchParams.get("title");
     const spaceKey = searchParams.get("spaceKey");
 
-    let cql = "type=page";
-    if (title) cql += ` AND title ~ "${title}"`;
-    if (spaceKey) cql += ` AND space = "${spaceKey}"`;
+    const cqlParts = ["type=page"];
+
+    if (spaceKey) {
+      cqlParts.push(`space = "${escapeCqlValue(spaceKey)}"`);
+    }
+
+    if (query) {
+      const escapedQuery = escapeCqlValue(query);
+      const tokens = escapedQuery.split(/\s+/).filter(Boolean);
+
+      // Require all words to appear in the title (prefix match) OR match the full phrase anywhere in the page.
+      const titleClause = tokens.length
+        ? tokens.map((token) => `title ~ "${token}*"`).join(" AND ")
+        : `title ~ "${escapedQuery}"`;
+      const phraseClause = `text ~ "\\"${escapedQuery}\\""`;
+
+      cqlParts.push(`(${phraseClause} OR (${titleClause}) OR title ~ "${escapedQuery}")`);
+    }
+
+    const cql = `${cqlParts.join(" AND ")} order by score desc`;
 
     const response = await fetch(
       `https://${domain}/wiki/rest/api/content?cql=${encodeURIComponent(
         cql
-      )}&expand=version,space`,
+      )}&expand=version,space&limit=50`,
       {
         headers: {
           Authorization: authHeader,
